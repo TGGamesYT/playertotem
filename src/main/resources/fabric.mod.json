@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "playertotem",
+  "version": "${version}",
+  "name": "PlayerTotem",
+  "description": "Changes the totem of undying to your skin's generated 2d totem",
+  "authors": ["TGdoesCode"],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/playertotem/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "dev.tggamesyt.playertotem.client.PlayertotemDataGenerator"
+    ],
+    "client": [
+      "dev.tggamesyt.playertotem.client.PlayertotemClient"
+    ],
+    "main": [
+      "dev.tggamesyt.playertotem.Playertotem"
+    ]
+  },
+  "mixins": [
+    "playertotem.mixins.json",
+    {
+      "config": "playertotem.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": ">=${minecraft_version}"
+  }
+}
