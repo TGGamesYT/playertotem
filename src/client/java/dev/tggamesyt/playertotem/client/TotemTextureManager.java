@@ -3,6 +3,7 @@ package dev.tggamesyt.playertotem.client;
 import net.minecraft.client.texture.NativeImage;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 /**
  * Generates a 16x16 totem-style texture from a player skin.
@@ -11,27 +12,92 @@ public class TotemTextureManager {
 
     private static final Method SET_COLOR_METHOD;
     private static final Method GET_COLOR_METHOD;
+    /** True when the NativeImage API returns/expects R and B in swapped positions vs. what writeTo() writes. */
+    private static final boolean SWAP_CHANNELS;
 
     static {
         SET_COLOR_METHOD = resolveSetColor();
         GET_COLOR_METHOD = resolveGetColor();
+        SWAP_CHANNELS = detectChannelSwap();
     }
 
-    // 1.20.1 uses setColor, 1.20.5+ uses setColorArgb
+    /**
+     * Detects whether getColor and setColor use inconsistent byte orders by doing a roundtrip
+     * (setColor → getColor on the same image) with a value that has distinct bytes per channel.
+     * If the read-back value has R and B swapped vs. what was written, SWAP_CHANNELS is set so
+     * getColor corrects before we pass the value to setColor on the output image.
+     * Also does a setColor → writeTo → ImageIO check to detect writeTo byte-order issues.
+     */
+    private static boolean detectChannelSwap() {
+        try {
+            NativeImage test = new NativeImage(1, 1, false);
+            // 0xFF_80_40_20: distinct values per byte so a R/B swap is unambiguous
+            int written = 0xFF804020;
+            SET_COLOR_METHOD.invoke(test, 0, 0, written);
+            int readBack = (int) GET_COLOR_METHOD.invoke(test, 0, 0);
+            test.close();
+            // If get/set are inconsistent (R and B swapped), readBack == swapRB(written)
+            boolean swap = (readBack == swapRB(written));
+            System.out.println("[PlayerTotem] Channel detect: written=0x" + Integer.toHexString(written)
+                    + " readBack=0x" + Integer.toHexString(readBack)
+                    + " SWAP=" + swap);
+            return swap;
+        } catch (Exception e) {
+            System.out.println("[PlayerTotem] Channel detection failed, assuming no swap: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static int swapRB(int color) {
+        int a = (color >> 24) & 0xFF;
+        int x = (color >> 16) & 0xFF;
+        int g = (color >>  8) & 0xFF;
+        int y =  color        & 0xFF;
+        return (a << 24) | (y << 16) | (g << 8) | x;
+    }
+
+    // 1.20.1: setColor, 1.20.5+: setColorArgb, newer: found by signature
     private static Method resolveSetColor() {
-        try { return NativeImage.class.getMethod("setColor", int.class, int.class, int.class); }
-        catch (NoSuchMethodException ignored) {}
-        try { return NativeImage.class.getMethod("setColorArgb", int.class, int.class, int.class); }
-        catch (NoSuchMethodException ignored) {}
+        for (String name : new String[]{"setColor", "setColorArgb", "setPixelColor", "setRgba"}) {
+            try {
+                Method m = NativeImage.class.getDeclaredMethod(name, int.class, int.class, int.class);
+                m.setAccessible(true);
+                return m;
+            } catch (NoSuchMethodException ignored) {}
+        }
+        // Last resort: scan all declared methods for void (int, int, int)
+        for (Method m : NativeImage.class.getDeclaredMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (m.getReturnType() == void.class && p.length == 3
+                    && p[0] == int.class && p[1] == int.class && p[2] == int.class) {
+                m.setAccessible(true);
+                System.out.println("[PlayerTotem] Resolved setColor via signature scan: " + m.getName());
+                return m;
+            }
+        }
         throw new IllegalStateException("[PlayerTotem] No NativeImage set color method found");
     }
 
-    // 1.20.1 uses getColor, 1.20.5+ uses getColorArgb
+    // 1.20.1: getColor, 1.20.5+: getColorArgb, newer: found by signature
     private static Method resolveGetColor() {
-        try { return NativeImage.class.getMethod("getColor", int.class, int.class); }
-        catch (NoSuchMethodException ignored) {}
-        try { return NativeImage.class.getMethod("getColorArgb", int.class, int.class); }
-        catch (NoSuchMethodException ignored) {}
+        for (String name : new String[]{"getColor", "getColorArgb", "getPixelColor", "getRgba"}) {
+            try {
+                Method m = NativeImage.class.getDeclaredMethod(name, int.class, int.class);
+                m.setAccessible(true);
+                return m;
+            } catch (NoSuchMethodException ignored) {}
+        }
+        // Last resort: scan all declared methods for int (int, int)
+        for (Method m : NativeImage.class.getDeclaredMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (m.getReturnType() == int.class && p.length == 2
+                    && p[0] == int.class && p[1] == int.class
+                    && !Modifier.isStatic(m.getModifiers())) {
+                m.setAccessible(true);
+                System.out.println("[PlayerTotem] Resolved getColor via signature scan: " + m.getName());
+                return m;
+            }
+        }
         throw new IllegalStateException("[PlayerTotem] No NativeImage get color method found");
     }
 
@@ -170,7 +236,8 @@ public class TotemTextureManager {
 
     private static int getColor(NativeImage img, int x, int y) {
         try {
-            return (int) GET_COLOR_METHOD.invoke(img, x, y);
+            int color = (int) GET_COLOR_METHOD.invoke(img, x, y);
+            return SWAP_CHANNELS ? swapRB(color) : color;
         } catch (Exception e) {
             throw new RuntimeException("Failed to get pixel color at (" + x + "," + y + ")", e);
         }

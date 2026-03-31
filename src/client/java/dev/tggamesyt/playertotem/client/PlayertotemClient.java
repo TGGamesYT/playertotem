@@ -11,6 +11,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.texture.NativeImage;
 
 import java.io.*;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -163,6 +164,56 @@ public class PlayertotemClient implements ClientModInitializer {
         System.out.println("[PlayerTotem] Generated totem pack at " + packRoot.getAbsolutePath());
     }
 
+    private static Method PROFILE_ID_METHOD = null;
+
+    /**
+     * Returns the pack profile's string ID.
+     * MC remaps class internals between versions, so Yarn names like "getName"/"getId"
+     * don't match at runtime (intermediary names like method_XXXX are used instead).
+     * We scan by signature: ResourcePackProfile has exactly one no-arg String method.
+     */
+    private static String getProfileId(Object profile) {
+        if (PROFILE_ID_METHOD == null) {
+            PROFILE_ID_METHOD = resolveProfileIdMethod(profile.getClass());
+        }
+        try {
+            return (String) PROFILE_ID_METHOD.invoke(profile);
+        } catch (Exception e) {
+            throw new RuntimeException("Cannot get pack profile id", e);
+        }
+    }
+
+    private static Method resolveProfileIdMethod(Class<?> cls) {
+        // Try known Yarn names first (getName = 1.20.1, getId = 1.21+)
+        for (String name : new String[]{"getName", "getId", "getInternalName"}) {
+            try {
+                Method m = cls.getMethod(name);
+                if (m.getReturnType() == String.class) return m;
+            } catch (NoSuchMethodException ignored) {}
+        }
+        // Signature scan: find the single public no-arg String method that isn't from Object
+        // ResourcePackProfile has exactly one such method across all MC versions
+        for (Method m : cls.getMethods()) {
+            if (m.getReturnType() == String.class
+                    && m.getParameterCount() == 0
+                    && !m.getDeclaringClass().equals(Object.class)) {
+                System.out.println("[PlayerTotem] Resolved profile id method via scan: " + m.getName());
+                return m;
+            }
+        }
+        // Last resort: check non-public declared methods up the hierarchy
+        for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getReturnType() == String.class && m.getParameterCount() == 0) {
+                    m.setAccessible(true);
+                    System.out.println("[PlayerTotem] Resolved profile id method via declared scan: " + m.getName());
+                    return m;
+                }
+            }
+        }
+        throw new RuntimeException("Cannot find pack profile id method on " + cls.getName());
+    }
+
     private void enablePackAndReload(MinecraftClient client) {
         var rpm = client.getResourcePackManager();
         rpm.scanPacks();
@@ -170,7 +221,7 @@ public class PlayertotemClient implements ClientModInitializer {
         // Check if the pack was discovered
         boolean found = false;
         for (var profile : rpm.getProfiles()) {
-            if (profile.getName().equals(PACK_ID)) {
+            if (getProfileId(profile).equals(PACK_ID)) {
                 found = true;
                 break;
             }
@@ -183,7 +234,7 @@ public class PlayertotemClient implements ClientModInitializer {
         // Add our pack to the enabled list if not already there
         List<String> enabled = new ArrayList<>();
         for (var p : rpm.getEnabledProfiles()) {
-            enabled.add(p.getName());
+            enabled.add(getProfileId(p));
         }
 
         if (!enabled.contains(PACK_ID)) {
