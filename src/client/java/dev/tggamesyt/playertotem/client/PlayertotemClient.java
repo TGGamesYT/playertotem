@@ -5,7 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.texture.NativeImage;
@@ -23,16 +23,13 @@ public class PlayertotemClient implements ClientModInitializer {
 
     public static final String MOD_ID = "playertotem";
     private static final String PACK_ID = "file/player_totem_pack";
-    private boolean applied = false;
-    private int tickDelay = 0;
 
     @Override
     public void onInitializeClient() {
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (!applied && client.player != null) {
-                // Wait 20 ticks (1 second) after player spawns for everything to settle
-                if (tickDelay++ < 20) return;
-                applied = true;
+        ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+            // Download skin on a background thread immediately at game start,
+            // before the main menu appears, so the reload never interrupts gameplay.
+            Thread thread = new Thread(() -> {
                 try {
                     NativeImage skin = downloadPlayerSkin(client);
                     if (skin == null) {
@@ -41,7 +38,7 @@ public class PlayertotemClient implements ClientModInitializer {
                     }
                     if (skin != null) {
                         writeTotemPack(client, skin);
-                        enablePackAndReload(client);
+                        client.execute(() -> enablePackAndReload(client));
                     } else {
                         System.out.println("[PlayerTotem] Could not obtain any skin texture");
                     }
@@ -49,7 +46,9 @@ public class PlayertotemClient implements ClientModInitializer {
                     System.out.println("[PlayerTotem] Error: " + e.getMessage());
                     e.printStackTrace();
                 }
-            }
+            }, "PlayerTotem-Skin-Download");
+            thread.setDaemon(true);
+            thread.start();
         });
     }
 
@@ -59,7 +58,7 @@ public class PlayertotemClient implements ClientModInitializer {
      */
     private NativeImage downloadPlayerSkin(MinecraftClient client) {
         try {
-            String uuid = client.player.getUuid().toString().replace("-", "");
+            String uuid = client.getSession().getProfile().getId().toString().replace("-", "");
 
             // Step 1: Get profile from Mojang's session server
             URL profileUrl = new URL("https://sessionserver.mojang.com/session/minecraft/profile/" + uuid);
